@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LoveSpark Sponsor Skip</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+
+    <header class="header">
+      <img src="icons/icon-48.png" alt="LoveSpark" class="logo">
+      <div class="title-block">
+        <span class="title">LoveSpark</span>
+        <span class="subtitle">Sponsor Skip</span>
+      </div>
+    </header>
+
+    <main class="stats">
+      <div class="stat-row">
+        <span class="stat-icon">💕</span>
+        <span class="stat-label">skipped today</span>
+        <span class="stat-value" id="val-today">0</span>
+      </div>
+      <div class="stat-row">
+        <span class="stat-icon">⏭️</span>
+        <span class="stat-label">skipped total</span>
+        <span class="stat-value" id="val-total">0</span>
+      </div>
+      <div class="time-saved-row">
+        <span class="time-saved" id="val-time">–</span>
+        <span class="time-saved-label">saved ✨</span>
+      </div>
+    </main>
+
+    <div class="divider"></div>
+
+    <div class="video-info" id="video-info">
+      <span class="video-label">Current video:</span>
+      <span class="video-segments" id="val-segments">–</span>
+    </div>
+
+    <div class="divider"></div>
+
+    <footer class="footer">
+      <label class="toggle-wrap" aria-label="Enable or disable LoveSpark Sponsor Skip">
+        <input type="checkbox" id="toggle-enabled" checked>
+        <span class="toggle-track">
+          <span class="toggle-thumb"></span>
+        </span>
+        <span class="toggle-label" id="toggle-label">Enabled</span>
+      </label>
+      <button class="settings-btn" id="settings-btn" title="Settings">⚙️</button>
+    </footer>
+
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LoveSpark Sponsor Skip — Settings</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="settings.css">
+</head>
+<body>
+
+<header>
+  <img src="icons/icon-48.png" alt="LoveSpark" class="header-logo">
+  <div>
+    <h1 class="header-title">LoveSpark Sponsor Skip</h1>
+    <span class="header-sub">Settings</span>
+  </div>
+</header>
+
+<div id="app">
+
+  <!-- ── Master Toggle ── -->
+  <section class="card">
+    <h2 class="card-title">⏭️ Protection</h2>
+    <div class="row-between">
+      <div>
+        <div class="setting-label">Enable Sponsor Skip</div>
+        <div class="setting-desc">Turn off to watch YouTube without auto-skipping</div>
+      </div>
+      <label class="toggle-wrap">
+        <input type="checkbox" id="toggle-enabled" checked>
+        <span class="toggle-track"><span class="toggle-thumb"></span></span>
+      </label>
+    </div>
+  </section>
+
+  <!-- ── Category Toggles ── -->
+  <section class="card">
+    <h2 class="card-title">🗂️ Categories</h2>
+    <p class="setting-desc" style="margin-bottom:16px">Choose which segment types to auto-skip:</p>
+
+    <div class="category-list">
+
+      <div class="category-row">
+        <div class="category-info">
+          <span class="category-icon">💰</span>
+          <div>
+            <div class="setting-label">Sponsor</div>
+            <div class="setting-desc">Paid promotions and sponsored segments</div>
+          </div>
+        </div>
+        <label class="toggle-wrap">
+          <input type="checkbox" data-category="sponsor" checked>
+          <span class="toggle-track"><span class="toggle-thumb"></span></span>
+        </label>
+      </div>
+
+      <div class="category-row">
+        <div class="category-info">
+          <span class="category-icon">🛍️</span>
+          <div>
+            <div class="setting-label">Self-Promo</div>
+            <div class="setting-desc">Creator's own merch, Patreon, channel plugs</div>
+          </div>
+        </div>
+        <label class="toggle-wrap">
+          <input type="checkbox" data-category="selfpromo" checked>
+          <span class="toggle-track"><span class="toggle-thumb"></span></span>
+        </label>
+      </div>
+
+      <div class="category-row">
+        <div class="category-info">
+          <span class="category-icon">👍</span>
+          <div>
+            <div class="setting-label">Interaction Reminder</div>
+            <div class="setting-desc">"Like and subscribe", "hit the bell" prompts</div>
+          </div>
+        </div>
+        <label class="toggle-wrap">
+          <input type="checkbox" data-category="interaction" checked>
+          <span class="toggle-track"><span class="toggle-thumb"></span></span>
+        </label>
+      </div>
+
+      <div class="category-row">
+        <div class="category-info">
+          <span class="category-icon">🎬</span>
+          <div>
+            <div class="setting-label">Intro</div>
+            <div class="setting-desc">Animated intros and bumpers at video start</div>
+          </div>
+        </div>
+        <label class="toggle-wrap">
+          <input type="checkbox" data-category="intro">
+          <span class="toggle-track"><span class="toggle-thumb"></span></span>
+        </label>
+      </div>
+
+      <div class="category-row">
+        <div class="category-info">
+          <span class="category-icon">🎞️</span>
+          <div>
+            <div class="setting-label">Outro</div>
+            <div class="setting-desc">End cards, credits, and subscribe screens</div>
+          </div>
+        </div>
+        <label class="toggle-wrap">
+          <input type="checkbox" data-category="outro">
+          <span class="toggle-track"><span class="toggle-thumb"></span></span>
+        </label>
+      </div>
+
+      <div class="category-row">
+        <div class="category-info">
+          <span class="category-icon">🎵</span>
+          <div>
+            <div class="setting-label">Non-Music</div>
+            <div class="setting-desc">Non-music content in music videos</div>
+          </div>
+        </div>
+        <label class="toggle-wrap">
+          <input type="checkbox" data-category="music_offtopic">
+          <span class="toggle-track"><span class="toggle-thumb"></span></span>
+        </label>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ── Stats Dashboard ── -->
+  <section class="card">
+    <h2 class="card-title">📊 Stats</h2>
+
+    <div class="stats-grid">
+      <div class="stat-cell">
+        <div id="stat-today" class="stat-big">0</div>
+        <div class="stat-lbl">Today</div>
+      </div>
+      <div class="stat-cell">
+        <div id="stat-total" class="stat-big">0</div>
+        <div class="stat-lbl">All time</div>
+      </div>
+      <div class="stat-cell stat-cell-wide">
+        <div id="stat-time" class="stat-big">–</div>
+        <div class="stat-lbl">Time saved</div>
+      </div>
+    </div>
+
+    <h3 class="sub-title">By category</h3>
+    <table class="cat-table" id="cat-table">
+      <tbody>
+        <tr><td class="cat-name">💰 Sponsor</td><td class="cat-count" id="cat-sponsor">0</td></tr>
+        <tr><td class="cat-name">🛍️ Self-Promo</td><td class="cat-count" id="cat-selfpromo">0</td></tr>
+        <tr><td class="cat-name">👍 Interaction</td><td class="cat-count" id="cat-interaction">0</td></tr>
+        <tr><td class="cat-name">🎬 Intro</td><td class="cat-count" id="cat-intro">0</td></tr>
+        <tr><td class="cat-name">🎞️ Outro</td><td class="cat-count" id="cat-outro">0</td></tr>
+        <tr><td class="cat-name">🎵 Non-Music</td><td class="cat-count" id="cat-music_offtopic">0</td></tr>
+      </tbody>
+    </table>
+
+    <div class="btn-row" style="margin-top:16px">
+      <button id="reset-stats" class="btn btn-danger">🗑️ Reset Stats</button>
+    </div>
+  </section>
+
+  <!-- ── SponsorBlock Attribution ── -->
+  <section class="card attribution-card">
+    <h2 class="card-title">🙏 Attribution</h2>
+    <p class="attribution-text">
+      Segment data provided by
+      <a href="https://sponsor.ajay.app" target="_blank" class="attr-link">SponsorBlock</a>
+      — a crowdsourced browser extension for skipping sponsor segments in YouTube videos.
+      Maintained by the open-source community.
+      <a href="https://sponsor.ajay.app" target="_blank" class="attr-link">Learn more ↗</a>
+    </p>
+  </section>
+
+</div>
+
+<footer>
+  <span>💕 LoveSpark Sponsor Skip v1.0.0 — Made with love</span>
+</footer>
+
+<script src="settings.js"></script>
+</body>
+</html>

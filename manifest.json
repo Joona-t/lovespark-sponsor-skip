@@ -1,0 +1,39 @@
+{
+  "manifest_version": 3,
+  "name": "LoveSpark Sponsor Skip",
+  "version": "1.0.0",
+  "description": "Auto-skip YouTube sponsors & self-promos. Crowdsourced with SponsorBlock 💕",
+  "permissions": ["storage", "tabs"],
+  "host_permissions": [
+    "*://*.youtube.com/*",
+    "https://sponsor.ajay.app/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://*.youtube.com/*"],
+      "js": ["lib/browser-polyfill.min.js", "content-youtube.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
+  },
+  "icons": {
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "sponsor-skip@lovespark.suite",
+      "strict_min_version": "109.0"
+    }
+  }
+}
