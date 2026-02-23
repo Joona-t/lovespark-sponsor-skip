@@ -82,7 +82,7 @@ function showSkipToast(segment) {
     zIndex: '9999',
     pointerEvents: 'none',
     opacity: '1',
-    transition: 'opacity 0.5s ease',
+    transition: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'none' : 'opacity 0.5s ease',
     letterSpacing: '0.01em',
     boxShadow: '0 2px 12px rgba(0,0,0,0.5)'
   });
@@ -176,11 +176,16 @@ function onVideoChange() {
   }
 
   // Ask background to fetch segments
+  const requestedVideoID = newVideoID;
+
   chrome.runtime.sendMessage({
     action: 'fetchSegments',
     videoID: newVideoID
   }).then(response => {
     if (!response) return;
+
+    // Staleness check: user navigated away while fetch was in-flight
+    if (currentVideoID !== requestedVideoID) return;
 
     isExtensionEnabled = response.enabled !== false;
     if (!isExtensionEnabled || !response.segments || response.segments.length === 0) return;

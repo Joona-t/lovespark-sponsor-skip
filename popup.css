@@ -146,6 +146,10 @@ html, body {
   animation: tick 0.35s ease-out;
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .stat-value.ticked { animation: none; }
+}
+
 /* ── Video info ───────────────────────────────────────────────────────────── */
 
 .video-info {
