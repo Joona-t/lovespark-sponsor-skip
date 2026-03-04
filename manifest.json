@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "LoveSpark Sponsor Skip",
-  "version": "1.0.0",
-  "description": "Auto-skip YouTube sponsors & self-promos. Crowdsourced with SponsorBlock 💕",
+  "version": "2.0.0",
+  "description": "Auto-skip YouTube sponsors, intros, outros & more. Three skip modes, progress bar visualization, channel whitelisting. Powered by SponsorBlock 💕",
   "permissions": ["storage"],
   "host_permissions": [
     "*://*.youtube.com/*",
@@ -14,7 +14,12 @@
   "content_scripts": [
     {
       "matches": ["*://*.youtube.com/*"],
-      "js": ["lib/browser-polyfill.min.js", "content-youtube.js"],
+      "css": ["content-styles.css"],
+      "run_at": "document_start"
+    },
+    {
+      "matches": ["*://*.youtube.com/*"],
+      "js": ["lib/browser-polyfill.min.js", "content.js"],
       "run_at": "document_idle"
     }
   ],
@@ -31,10 +36,30 @@
     "48": "icons/icon-48.png",
     "128": "icons/icon-128.png"
   },
+  "web_accessible_resources": [
+    {
+      "resources": ["mascot.png"],
+      "matches": ["*://*.youtube.com/*"]
+    }
+  ],
+  "commands": {
+    "toggle-skip": {
+      "suggested_key": { "default": "Shift+S" },
+      "description": "Toggle sponsor skip on/off"
+    },
+    "whitelist-channel": {
+      "suggested_key": { "default": "Shift+W" },
+      "description": "Whitelist current channel"
+    }
+  },
   "browser_specific_settings": {
     "gecko": {
       "id": "sponsor-skip@lovespark.suite",
-      "strict_min_version": "109.0"
+      "strict_min_version": "109.0",
+      "data_collection_permissions": {
+        "is_exempt": true,
+        "justification": "This extension does not collect, transmit, or store any user data. Only SHA-256 hash prefixes are sent to SponsorBlock for k-anonymity segment lookups."
+      }
     }
   }
 }

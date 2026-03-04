@@ -1,0 +1,46 @@
+/* LoveSpark Sponsor Skip v2 — content-styles.css
+   Injected at document_start to prevent FOUC.
+   Progress bar segments are injected into YouTube's DOM.
+   Toasts use Shadow DOM (styles are inline in content.js). */
+
+/* ── Progress bar segment markers ─────────────────────────────────────────── */
+
+.ls-segments {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 35;
+}
+
+.ls-segment {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  opacity: 0.55;
+  border-radius: 1px;
+  transition: opacity 0.15s ease;
+  pointer-events: auto;
+}
+
+.ls-segment:hover {
+  opacity: 0.85;
+}
+
+/* Category colors */
+.ls-segment[data-category="sponsor"]        { background: #ff6eb4; }
+.ls-segment[data-category="selfpromo"]      { background: #c2185b; }
+.ls-segment[data-category="interaction"]    { background: #ff9fd3; }
+.ls-segment[data-category="intro"]          { background: #ffb3d9; }
+.ls-segment[data-category="outro"]          { background: #ffb3d9; }
+.ls-segment[data-category="preview"]        { background: #f48fb1; }
+.ls-segment[data-category="music_offtopic"] { background: #e91e63; }
+.ls-segment[data-category="filler"]         { background: #f8bbd0; }
+
+/* ── Reduced motion ───────────────────────────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  .ls-segment { transition: none; }
+}
