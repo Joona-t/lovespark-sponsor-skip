@@ -225,3 +225,6 @@ footerMsg.textContent = MESSAGES[Math.floor(Math.random() * MESSAGES.length)];
 // ── Init ─────────────────────────────────────────────────────────────────────
 
 loadStats();
+
+/* ── Author / Ko-fi Footer ── */
+document.body.insertAdjacentHTML('beforeend', LoveSparkFooter.render());
