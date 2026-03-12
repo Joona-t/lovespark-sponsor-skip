@@ -71,6 +71,9 @@
       "description": "Whitelist current channel"
     }
   },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; font-src 'self'"
+  },
   "browser_specific_settings": {
     "gecko": {
       "id": "sponsor-skip@lovespark.suite",
