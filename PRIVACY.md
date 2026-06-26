@@ -1,10 +1,10 @@
-# Privacy Policy — LoveSpark Sponsor Skip
+# Privacy Policy — YouTube Sponsor Skip
 
 **Last updated:** February 23, 2026
 
 ## Summary
 
-LoveSpark Sponsor Skip does **not** collect, store, or transmit any personal data. All user preferences and statistics are stored locally on your device.
+YouTube Sponsor Skip does **not** collect, store, or transmit any personal data. All user preferences and statistics are stored locally on your device.
 
 ## Data Storage
 
@@ -39,7 +39,7 @@ No other network requests are made by this extension.
 
 ## Data Sharing
 
-LoveSpark Sponsor Skip does **not**:
+YouTube Sponsor Skip does **not**:
 
 - Collect personal information
 - Track browsing activity

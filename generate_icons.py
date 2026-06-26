@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-LoveSpark Sponsor Skip — generate_icons.py
+YouTube Sponsor Skip — generate_icons.py
 Generates pink skip/fast-forward icons (⏭️ shape) at 16, 48, and 128px using Pillow.
 
 Install dependency:

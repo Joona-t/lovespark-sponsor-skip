@@ -1,4 +1,4 @@
-# LoveSpark Sponsor Skip
+# YouTube Sponsor Skip
 
 Auto-skip YouTube sponsor segments with style. Uses the [SponsorBlock](https://sponsor.ajay.app/) community API for segment data.
 

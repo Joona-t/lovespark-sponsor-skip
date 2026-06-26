@@ -1,4 +1,4 @@
-// LoveSpark Sponsor Skip v2 — background.js (Service Worker)
+// YouTube Sponsor Skip v2 — background.js (Service Worker)
 'use strict';
 
 // ── Constants ────────────────────────────────────────────────────────────────

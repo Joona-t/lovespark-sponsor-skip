@@ -1,4 +1,4 @@
-// LoveSpark Sponsor Skip v2 — settings.js
+// YouTube Sponsor Skip v2 — settings.js
 'use strict';
 
 // Dark mode

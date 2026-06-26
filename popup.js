@@ -1,4 +1,4 @@
-// LoveSpark Sponsor Skip v2 — popup.js
+// YouTube Sponsor Skip v2 — popup.js
 'use strict';
 
 // Theme dropdown

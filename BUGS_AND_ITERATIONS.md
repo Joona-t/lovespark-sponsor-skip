@@ -40,3 +40,10 @@
 **Fix:** Reverted all 76 git repos to last committed state. Fixed 3 extensions (cookie-nuke, breathe, planner) that had the bug baked into commits. Added footer buttons (LoveSpark Suite, Ko-fi, Report a Bug) to all 26 missing extensions. Updated shared lib footer to make LoveSpark Suite a proper link to lovespark.love. Deployed `guard-fleet-sync.sh` — 4-gate pre-sync validator that blocks automations introducing undefined CSS variables.
 **Files:** popup.css, popup.html, lib/lovespark-footer.js, lib/lovespark-footer.css
 **Commit:** fleet-wide fix, multiple commits
+
+## 2026-06-26: Rename display title "LoveSpark Sponsor Skip" → "YouTube Sponsor Skip"
+
+**Problem:** Owner requested the package/display title be renamed from "LoveSpark Sponsor Skip" to "YouTube Sponsor Skip" (the "Title from package" shown by AMO/CWS at upload).
+**Root cause:** N/A — product naming change.
+**Fix:** Exact-string replace of "LoveSpark Sponsor Skip" → "YouTube Sponsor Skip" across all 55 `_locales/*/messages.json` `extName` values (all previously held the identical untranslated English string), plus UI titles + comment headers in popup/settings/content/background, README.md, PRIVACY.md, generate_icons.py. Hyphenated package id `lovespark-sponsor-skip` (dir/repo/storage keys) intentionally left unchanged. Bumped manifest version 2.0.35 → 2.0.36. All JSON validated.
+**Files:** manifest.json, 55× _locales/*/messages.json, popup.html, popup.js, popup.css, settings.html, settings.js, settings.css, content.js, content-styles.css, background.js, README.md, PRIVACY.md, generate_icons.py

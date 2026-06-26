@@ -1,4 +1,4 @@
-// LoveSpark Sponsor Skip v2 — content.js
+// YouTube Sponsor Skip v2 — content.js
 'use strict';
 
 // ── YouTube selectors (centralized for easy maintenance) ─────────────────────
