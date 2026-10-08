@@ -1,467 +1,551 @@
-// YouTube Sponsor Skip v2 — background.js (Service Worker)
+// YouTube Sponsor Skip v3 — shared background runtime
 'use strict';
 
-// ── Constants ────────────────────────────────────────────────────────────────
+const {
+  CATEGORIES,
+  isValidVideoId,
+  normalizeModes,
+  activeCategorySignature,
+  extractSegments,
+  validateSegments,
+  cacheKeyFromDigest,
+  isLegacyRawCacheKey,
+  isValidChannel,
+  sanitizeDuration,
+  isValidReceiptId,
+  presentStatus
+} = globalThis.LoveSparkCore;
 
-const SCHEMA_VERSION = 2;
-const MEMORY_CACHE_TTL = 3_600_000;  // 1 hour in-memory
-const STORAGE_CACHE_TTL = 86_400_000; // 24 hours persistent
+const SCHEMA_VERSION = 3;
+const MEMORY_CACHE_TTL = 60 * 60 * 1000;
+const STORAGE_CACHE_TTL = 24 * 60 * 60 * 1000;
+const STALE_CACHE_TTL = 7 * 24 * 60 * 60 * 1000;
+const API_TIMEOUT_MS = 4000;
+const MAX_WHITELIST_ITEMS = 500;
+const MAX_RECEIPTS = 100;
 const BADGE_COLOR = '#ff6eb4';
 
-const ALL_CATEGORIES = [
-  'sponsor', 'selfpromo', 'interaction', 'intro',
-  'outro', 'preview', 'music_offtopic', 'filler'
-];
-
-const DEFAULT_MODES = {
-  sponsor:        'auto',
-  selfpromo:      'auto',
-  interaction:    'auto',
-  intro:          'highlight',
-  outro:          'highlight',
-  preview:        'highlight',
+const DEFAULT_MODES = Object.freeze({
+  sponsor: 'auto',
+  selfpromo: 'auto',
+  interaction: 'auto',
+  intro: 'highlight',
+  outro: 'highlight',
+  preview: 'highlight',
   music_offtopic: 'auto',
-  filler:         'highlight'
-};
+  filler: 'highlight'
+});
+const DEFAULT_CATEGORY_STATS = Object.freeze(Object.fromEntries(CATEGORIES.map(category => [category, 0])));
 
-const DEFAULT_CATEGORY_STATS = Object.fromEntries(ALL_CATEGORIES.map(c => [c, 0]));
+const memoryCache = new Map(); // opaque cache key -> { segments, cachedAt, status, source }
+const tabState = new Map(); // tab id -> non-persistent current-video status
+const tabRequest = new Map(); // tab id -> most recent request id
+let statsMutationChain = Promise.resolve();
 
-const CATEGORY_LABELS = {
-  sponsor:        'Sponsor',
-  selfpromo:      'Self-Promo',
-  interaction:    'Interaction',
-  intro:          'Intro',
-  outro:          'Outro',
-  preview:        'Preview',
-  music_offtopic: 'Non-Music',
-  filler:         'Filler'
-};
-
-// ── In-memory state ──────────────────────────────────────────────────────────
-
-const segmentCache = new Map(); // videoID → {segments, timestamp}
-const tabSegments  = new Map(); // tabId → {videoID, count, segments}
-
-// ── SHA-256 helper ───────────────────────────────────────────────────────────
-
-async function sha256(message) {
-  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(message));
-  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+function today() {
+  return new Date().toISOString().slice(0, 10);
 }
 
-// ── Persistent segment cache ─────────────────────────────────────────────────
-
-async function getCachedSegments(videoID) {
-  const key = `cache_${videoID}`;
-  const data = await chrome.storage.local.get(key);
-  if (!data[key]) return null;
-  if (Date.now() - data[key].fetchedAt > STORAGE_CACHE_TTL) {
-    chrome.storage.local.remove(key);
-    return null;
-  }
-  return data[key].segments;
+function queueStatsMutation(mutation) {
+  const queued = statsMutationChain.then(mutation, mutation);
+  statsMutationChain = queued.catch(() => {});
+  return queued;
 }
 
-async function setCachedSegments(videoID, segments) {
-  await chrome.storage.local.set({
-    [`cache_${videoID}`]: { segments, fetchedAt: Date.now() }
-  });
+async function sha256(value) {
+  const bytes = new TextEncoder().encode(value);
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
 }
 
-async function purgeExpiredCaches() {
-  const all = await chrome.storage.local.get(null);
-  const expired = Object.keys(all).filter(k =>
-    k.startsWith('cache_') && Date.now() - (all[k].fetchedAt || 0) > STORAGE_CACHE_TTL
-  );
-  if (expired.length) await chrome.storage.local.remove(expired);
+async function cacheIdentity(videoID, categorySignature) {
+  return cacheKeyFromDigest(await sha256(`${videoID}\u0000${categorySignature}`));
 }
-
-// ── Get category modes from storage ──────────────────────────────────────────
 
 async function getCategoryModes() {
-  const data = await chrome.storage.local.get('categoryModes');
-  return { ...DEFAULT_MODES, ...(data.categoryModes || {}) };
+  try {
+    const data = await browser.storage.local.get('categoryModes');
+    return normalizeModes(data.categoryModes, DEFAULT_MODES);
+  } catch (error) {
+    // Settings storage must not turn a temporary browser-storage fault into an
+    // unhandled lookup failure. Defaults keep playback behavior deterministic.
+    console.warn('[LoveSpark] Category settings read failed:', error.message);
+    return { ...DEFAULT_MODES };
+  }
 }
 
-function getActiveCategories(modes) {
-  return ALL_CATEGORIES.filter(c => modes[c] !== 'off');
+async function readCache(cacheKey) {
+  try {
+    const data = await browser.storage.local.get(cacheKey);
+    return { record: data[cacheKey] || null, storageError: false };
+  } catch (error) {
+    console.warn('[LoveSpark] Cache read failed:', error.message);
+    return { record: null, storageError: true };
+  }
 }
 
-// ── Fetch segments (memory → storage → API → fallback) ──────────────────────
+async function writeCache(cacheKey, segments) {
+  try {
+    await browser.storage.local.set({
+      [cacheKey]: { segments, fetchedAt: Date.now() }
+    });
+  } catch (error) {
+    // A valid network result remains useful even if local quota/storage fails.
+    console.warn('[LoveSpark] Cache write failed:', error.message);
+  }
+}
+
+function validatedCacheRecord(record) {
+  if (!record || !Number.isFinite(record.fetchedAt)) return null;
+  const segments = validateSegments(record.segments);
+  return segments === null ? null : { segments, fetchedAt: record.fetchedAt };
+}
 
 async function fetchSegments(videoID) {
-  // 1. Memory cache
-  const mem = segmentCache.get(videoID);
-  if (mem && Date.now() - mem.timestamp < MEMORY_CACHE_TTL) return mem.segments;
+  if (!isValidVideoId(videoID)) {
+    return { ok: false, status: 'unavailable', source: null, segments: [], error: 'invalid-video-id' };
+  }
 
   const modes = await getCategoryModes();
-  const active = getActiveCategories(modes);
-  if (active.length === 0) return [];
+  const categorySignature = activeCategorySignature(modes);
+  if (!categorySignature) return { ok: true, status: 'clean', source: 'local', segments: [] };
 
-  // 2. Try API
-  let segments = null;
+  const cacheKey = await cacheIdentity(videoID, categorySignature);
+  const memory = memoryCache.get(cacheKey);
+  if (memory && Date.now() - memory.cachedAt <= MEMORY_CACHE_TTL) {
+    return {
+      ok: true,
+      status: memory.status,
+      source: memory.source,
+      segments: memory.segments
+    };
+  }
+
+  const { record } = await readCache(cacheKey);
+  const stored = validatedCacheRecord(record);
+  if (stored && Date.now() - stored.fetchedAt <= STORAGE_CACHE_TTL) {
+    memoryCache.set(cacheKey, {
+      segments: stored.segments,
+      cachedAt: Date.now(),
+      status: stored.segments.length ? 'ready' : 'clean',
+      source: 'cache'
+    });
+    return {
+      ok: true,
+      status: stored.segments.length ? 'ready' : 'clean',
+      source: 'cache',
+      segments: stored.segments
+    };
+  }
+
+  let timeoutId = null;
   try {
-    const hash = await sha256(videoID);
-    const prefix = hash.substring(0, 4);
-    const url = `https://sponsor.ajay.app/api/skipSegments/${prefix}?categories=${encodeURIComponent(JSON.stringify(active))}`;
-    const response = await fetch(url);
+    const prefix = (await sha256(videoID)).slice(0, 4);
+    const categories = categorySignature.split(',');
+    const url = `https://sponsor.ajay.app/api/skipSegments/${prefix}?categories=${encodeURIComponent(JSON.stringify(categories))}`;
+    const controller = new AbortController();
+    timeoutId = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+    const response = await fetch(url, { signal: controller.signal });
 
     if (response.status === 404) {
-      segments = [];
-    } else if (response.ok) {
-      const allResults = await response.json();
-      const match = allResults.find(r => r.videoID === videoID);
-      segments = match ? match.segments : [];
+      const empty = [];
+      memoryCache.set(cacheKey, { segments: empty, cachedAt: Date.now(), status: 'clean', source: 'network' });
+      await writeCache(cacheKey, empty);
+      return { ok: true, status: 'clean', source: 'network', segments: empty };
     }
-  } catch (e) {
-    console.warn('[LoveSpark] SponsorBlock API error:', e.message);
+    if (!response.ok) throw new Error(`SponsorBlock HTTP ${response.status}`);
+
+    const segments = extractSegments(await response.json(), videoID);
+    if (segments === null) throw new Error('Malformed SponsorBlock response');
+    const cached = {
+      segments,
+      cachedAt: Date.now(),
+      status: segments.length ? 'ready' : 'clean',
+      source: 'network'
+    };
+    memoryCache.set(cacheKey, cached);
+    await writeCache(cacheKey, segments);
+    return {
+      ok: true,
+      status: segments.length ? 'ready' : 'clean',
+      source: 'network',
+      segments
+    };
+  } catch (error) {
+    console.warn('[LoveSpark] SponsorBlock lookup failed:', error.message);
+  } finally {
+    if (timeoutId !== null) clearTimeout(timeoutId);
   }
 
-  // 3. API succeeded — cache and return
-  if (segments !== null) {
-    segmentCache.set(videoID, { segments, timestamp: Date.now() });
-    setCachedSegments(videoID, segments);
-    return segments;
+  if (stored && Date.now() - stored.fetchedAt <= STALE_CACHE_TTL) {
+    memoryCache.set(cacheKey, {
+      segments: stored.segments,
+      cachedAt: Date.now(),
+      status: 'cached-offline',
+      source: 'stale-cache'
+    });
+    return { ok: true, status: 'cached-offline', source: 'stale-cache', segments: stored.segments };
   }
-
-  // 4. API failed — try persistent cache
-  const stored = await getCachedSegments(videoID);
-  if (stored) {
-    segmentCache.set(videoID, { segments: stored, timestamp: Date.now() });
-    return stored;
-  }
-
-  // 5. Everything failed
-  return [];
+  return { ok: false, status: 'unavailable', source: null, segments: [], retryable: true };
 }
 
-// ── Badge ────────────────────────────────────────────────────────────────────
-
-function formatTimeBadge(totalSeconds) {
-  if (totalSeconds >= 3600) return `${Math.floor(totalSeconds / 3600)}h`;
-  if (totalSeconds >= 60) return `${Math.floor(totalSeconds / 60)}m`;
-  if (totalSeconds > 0) return `${totalSeconds}s`;
-  return '';
+async function purgePrivateLegacyData() {
+  const all = await browser.storage.local.get(null);
+  const expiredOrLegacy = Object.keys(all).filter(key => {
+    if (isLegacyRawCacheKey(key, all[key])) return true;
+    if (!key.startsWith('segment_cache_v3_')) return false;
+    return Date.now() - (all[key]?.fetchedAt || 0) > STALE_CACHE_TTL;
+  });
+  if (expiredOrLegacy.length) await browser.storage.local.remove(expiredOrLegacy);
+  // A short-lived development version stored raw IDs inside this ledger.
+  if (all.skipLedger !== undefined) await browser.storage.local.remove('skipLedger');
 }
 
 async function updateBadge() {
-  const data = await chrome.storage.local.get(['timeSavedTotalSeconds', 'isEnabled']);
-
-  if (data.isEnabled === false) {
-    chrome.action.setBadgeText({ text: 'OFF' });
-    chrome.action.setBadgeBackgroundColor({ color: '#666666' });
-    return;
+  if (!browser.action) return;
+  const data = await browser.storage.local.get(['timeSavedTotalSeconds', 'isEnabled']);
+  const disabled = data.isEnabled === false;
+  const seconds = Math.max(0, Number(data.timeSavedTotalSeconds) || 0);
+  const text = disabled ? 'OFF' : seconds >= 3600 ? `${Math.floor(seconds / 3600)}h`
+    : seconds >= 60 ? `${Math.floor(seconds / 60)}m` : seconds > 0 ? `${Math.floor(seconds)}s` : '';
+  if (browser.action.setBadgeText) await browser.action.setBadgeText({ text });
+  if (browser.action.setBadgeBackgroundColor) {
+    await browser.action.setBadgeBackgroundColor({ color: disabled ? '#666666' : BADGE_COLOR });
   }
-
-  const text = formatTimeBadge(data.timeSavedTotalSeconds || 0);
-  chrome.action.setBadgeText({ text });
-  chrome.action.setBadgeBackgroundColor({ color: BADGE_COLOR });
-  chrome.action.setBadgeTextColor({ color: '#FFFFFF' });
+  if (!disabled && browser.action.setBadgeTextColor) {
+    try { await browser.action.setBadgeTextColor({ color: '#FFFFFF' }); } catch (error) {
+      console.warn('[LoveSpark] Badge text color unavailable:', error.message);
+    }
+  }
 }
 
-// ── Whitelist helpers ────────────────────────────────────────────────────────
-
 async function getWhitelists() {
-  const data = await chrome.storage.local.get(['whitelistedChannels', 'whitelistedVideos']);
+  const data = await browser.storage.local.get(['whitelistedChannels', 'whitelistedVideos']);
   return {
-    channels: data.whitelistedChannels || [],
-    videos: data.whitelistedVideos || []
+    channels: Array.isArray(data.whitelistedChannels) ? data.whitelistedChannels.filter(isValidChannel) : [],
+    videos: Array.isArray(data.whitelistedVideos) ? data.whitelistedVideos.filter(isValidVideoId) : []
   };
 }
 
 async function isWhitelisted(videoID, channelID) {
-  const wl = await getWhitelists();
-  if (videoID && wl.videos.includes(videoID)) return true;
-  if (channelID && wl.channels.some(c => c.id === channelID)) return true;
-  return false;
+  const whitelist = await getWhitelists();
+  return whitelist.videos.includes(videoID) ||
+    (typeof channelID === 'string' && whitelist.channels.some(channel => channel.id === channelID));
 }
 
 async function addChannelWhitelist(channel) {
-  const wl = await getWhitelists();
-  if (wl.channels.some(c => c.id === channel.id)) return;
-  wl.channels.push(channel);
-  await chrome.storage.local.set({ whitelistedChannels: wl.channels });
-}
-
-async function removeChannelWhitelist(channelID) {
-  const wl = await getWhitelists();
-  await chrome.storage.local.set({
-    whitelistedChannels: wl.channels.filter(c => c.id !== channelID)
-  });
+  if (!isValidChannel(channel)) return false;
+  const whitelist = await getWhitelists();
+  if (!whitelist.channels.some(item => item.id === channel.id)) whitelist.channels.push(channel);
+  await browser.storage.local.set({ whitelistedChannels: whitelist.channels.slice(-MAX_WHITELIST_ITEMS) });
+  return true;
 }
 
 async function addVideoWhitelist(videoID) {
-  const wl = await getWhitelists();
-  if (wl.videos.includes(videoID)) return;
-  wl.videos.push(videoID);
-  await chrome.storage.local.set({ whitelistedVideos: wl.videos });
+  if (!isValidVideoId(videoID)) return false;
+  const whitelist = await getWhitelists();
+  if (!whitelist.videos.includes(videoID)) whitelist.videos.push(videoID);
+  await browser.storage.local.set({ whitelistedVideos: whitelist.videos.slice(-MAX_WHITELIST_ITEMS) });
+  return true;
 }
 
-async function removeVideoWhitelist(videoID) {
-  const wl = await getWhitelists();
-  await chrome.storage.local.set({
-    whitelistedVideos: wl.videos.filter(v => v !== videoID)
-  });
+function pruneReceipts(receipts) {
+  const entries = Object.entries(receipts).sort((a, b) => (a[1].createdAt || 0) - (b[1].createdAt || 0));
+  while (entries.length > MAX_RECEIPTS) delete receipts[entries.shift()[0]];
+  return receipts;
 }
 
-// ── Storage init & migration ─────────────────────────────────────────────────
-
-async function initStorage() {
-  const data = await chrome.storage.local.get(null);
-  const today = new Date().toISOString().slice(0, 10);
-  const updates = {};
-
-  // Migrate v1 → v2
-  if (data.schemaVersion !== SCHEMA_VERSION) {
-    // Convert old boolean categories to mode strings
-    if (data.categories && !data.categoryModes) {
-      const modes = {};
-      for (const cat of ALL_CATEGORIES) {
-        if (cat in data.categories) {
-          modes[cat] = data.categories[cat] ? 'auto' : 'off';
-        } else {
-          modes[cat] = DEFAULT_MODES[cat];
-        }
-      }
-      updates.categoryModes = modes;
-    }
-    updates.schemaVersion = SCHEMA_VERSION;
+async function recordSkip(receiptId, category, durationValue) {
+  const duration = sanitizeDuration(durationValue);
+  if (!isValidReceiptId(receiptId) || !CATEGORIES.includes(category) || duration === null) {
+    return { ok: false, error: 'invalid-skip' };
   }
-
-  // Set defaults for missing keys
-  if (data.sponsorsSkippedTotal === undefined) updates.sponsorsSkippedTotal = 0;
-  if (data.sponsorsSkippedToday === undefined) updates.sponsorsSkippedToday = 0;
-  if (data.timeSavedTotalSeconds === undefined) updates.timeSavedTotalSeconds = 0;
-  if (data.lastResetDate === undefined) updates.lastResetDate = today;
-  if (data.isEnabled === undefined) updates.isEnabled = true;
-  if (!data.categoryModes && !updates.categoryModes) updates.categoryModes = { ...DEFAULT_MODES };
-  if (data.categoryStats === undefined) updates.categoryStats = { ...DEFAULT_CATEGORY_STATS };
-  if (data.whitelistedChannels === undefined) updates.whitelistedChannels = [];
-  if (data.whitelistedVideos === undefined) updates.whitelistedVideos = [];
-
-  // Daily reset
-  if (data.lastResetDate && data.lastResetDate !== today) {
-    updates.sponsorsSkippedToday = 0;
-    updates.lastResetDate = today;
-    purgeExpiredCaches();
-  }
-
-  if (Object.keys(updates).length > 0) await chrome.storage.local.set(updates);
-  await updateBadge();
-}
-
-// ── Record a skip ────────────────────────────────────────────────────────────
-
-async function recordSkip(category, durationSeconds) {
-  const data = await chrome.storage.local.get([
-    'sponsorsSkippedTotal', 'sponsorsSkippedToday',
-    'timeSavedTotalSeconds', 'lastResetDate', 'categoryStats'
+  const data = await browser.storage.local.get([
+    'sponsorsSkippedTotal', 'sponsorsSkippedToday', 'timeSavedTotalSeconds',
+    'lastResetDate', 'categoryStats', 'skipReceipts'
   ]);
-
-  const today = new Date().toISOString().slice(0, 10);
-  const updates = {};
-
-  if (data.lastResetDate !== today) {
-    updates.sponsorsSkippedToday = 0;
-    updates.lastResetDate = today;
+  const receipts = { ...(data.skipReceipts || {}) };
+  const existing = receipts[receiptId];
+  if (existing?.state === 'undo-pending') {
+    receipts[receiptId] = { ...existing, state: 'undone', category, duration, createdAt: Date.now() };
+    await browser.storage.local.set({ skipReceipts: pruneReceipts(receipts) });
+    return { ok: true, receiptId, recorded: false, undone: true };
   }
+  if (existing) return { ok: true, receiptId, duplicate: true, state: existing.state };
 
-  updates.sponsorsSkippedTotal = (data.sponsorsSkippedTotal || 0) + 1;
-  updates.sponsorsSkippedToday = (updates.sponsorsSkippedToday !== undefined
-    ? updates.sponsorsSkippedToday
-    : (data.sponsorsSkippedToday || 0)) + 1;
-  updates.timeSavedTotalSeconds = (data.timeSavedTotalSeconds || 0) + Math.round(durationSeconds);
-
-  const catStats = { ...DEFAULT_CATEGORY_STATS, ...(data.categoryStats || {}) };
-  if (category in catStats) catStats[category] = (catStats[category] || 0) + 1;
-  updates.categoryStats = catStats;
-
-  await chrome.storage.local.set(updates);
+  const date = today();
+  const resetToday = data.lastResetDate !== date;
+  const categoryStats = { ...DEFAULT_CATEGORY_STATS, ...(data.categoryStats || {}) };
+  categoryStats[category] = Math.max(0, Number(categoryStats[category]) || 0) + 1;
+  receipts[receiptId] = { state: 'recorded', category, duration, date, createdAt: Date.now() };
+  await browser.storage.local.set({
+    sponsorsSkippedTotal: Math.max(0, Number(data.sponsorsSkippedTotal) || 0) + 1,
+    sponsorsSkippedToday: (resetToday ? 0 : Math.max(0, Number(data.sponsorsSkippedToday) || 0)) + 1,
+    timeSavedTotalSeconds: Math.max(0, Number(data.timeSavedTotalSeconds) || 0) + duration,
+    lastResetDate: date,
+    categoryStats,
+    skipReceipts: pruneReceipts(receipts)
+  });
   await updateBadge();
+  return { ok: true, receiptId, recorded: true };
 }
 
-// ── Broadcast to all YouTube tabs ────────────────────────────────────────────
+async function undoSkip(receiptId) {
+  if (!isValidReceiptId(receiptId)) return { ok: false, error: 'invalid-receipt' };
+  const data = await browser.storage.local.get([
+    'skipReceipts', 'sponsorsSkippedTotal', 'sponsorsSkippedToday',
+    'timeSavedTotalSeconds', 'categoryStats'
+  ]);
+  const receipts = { ...(data.skipReceipts || {}) };
+  const receipt = receipts[receiptId];
+  if (!receipt) {
+    receipts[receiptId] = { state: 'undo-pending', createdAt: Date.now() };
+    await browser.storage.local.set({ skipReceipts: pruneReceipts(receipts) });
+    return { ok: true, receiptId, pending: true };
+  }
+  if (receipt.state !== 'recorded') return { ok: true, receiptId, duplicate: true, state: receipt.state };
+
+  const categoryStats = { ...DEFAULT_CATEGORY_STATS, ...(data.categoryStats || {}) };
+  categoryStats[receipt.category] = Math.max(0, (Number(categoryStats[receipt.category]) || 0) - 1);
+  receipts[receiptId] = { ...receipt, state: 'undone' };
+  await browser.storage.local.set({
+    sponsorsSkippedTotal: Math.max(0, (Number(data.sponsorsSkippedTotal) || 0) - 1),
+    sponsorsSkippedToday: receipt.date === today()
+      ? Math.max(0, (Number(data.sponsorsSkippedToday) || 0) - 1)
+      : Math.max(0, Number(data.sponsorsSkippedToday) || 0),
+    timeSavedTotalSeconds: Math.max(0, (Number(data.timeSavedTotalSeconds) || 0) - receipt.duration),
+    categoryStats,
+    skipReceipts: receipts
+  });
+  await updateBadge();
+  return { ok: true, receiptId, undone: true };
+}
 
 async function broadcastToYouTube(message) {
   try {
-    const tabs = await chrome.tabs.query({ url: '*://*.youtube.com/*' });
-    for (const tab of tabs) {
-      if (tab.id) chrome.tabs.sendMessage(tab.id, message).catch(() => {});
-    }
-  } catch (e) {}
+    const tabs = await browser.tabs.query({ url: '*://*.youtube.com/*' });
+    await Promise.all(tabs.filter(tab => Number.isInteger(tab.id)).map(tab =>
+      browser.tabs.sendMessage(tab.id, message).catch(() => null)
+    ));
+  } catch (error) {
+    console.warn('[LoveSpark] Broadcast failed:', error.message);
+  }
 }
 
-// ── Message handler ──────────────────────────────────────────────────────────
+function setTabState(tabId, state) {
+  if (Number.isInteger(tabId)) tabState.set(tabId, state);
+}
 
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  (async () => {
-    switch (message.action) {
+async function handleMessage(message, sender) {
+  if (sender?.id && sender.id !== browser.runtime.id) return { ok: false, error: 'invalid-sender' };
+  if (!message || typeof message.action !== 'string') return { ok: false, error: 'invalid-message' };
+  const tabId = sender?.tab?.id;
 
-      case 'fetchSegments': {
-        const { videoID, channelID } = message;
-        const tabId = sender.tab?.id;
+  switch (message.action) {
+    case 'ping':
+      return { ok: true, product: 'lovespark-sponsor-skip', version: browser.runtime.getManifest().version };
 
-        const data = await chrome.storage.local.get('isEnabled');
-        if (!videoID || data.isEnabled === false) {
-          if (tabId) tabSegments.set(tabId, { videoID: videoID || null, count: 0, segments: [] });
-          sendResponse({ segments: [], enabled: data.isEnabled !== false });
-          break;
-        }
-
-        // Whitelist check
-        const whitelisted = await isWhitelisted(videoID, channelID);
-        if (whitelisted) {
-          if (tabId) tabSegments.set(tabId, { videoID, count: 0, segments: [] });
-          sendResponse({ segments: [], enabled: true, whitelisted: true });
-          break;
-        }
-
-        const segments = await fetchSegments(videoID);
-        const modes = await getCategoryModes();
-
-        // Annotate each segment with its mode
-        const annotated = segments
-          .filter(s => modes[s.category] !== 'off')
-          .map(s => ({
-            segment: s.segment,
-            category: s.category,
-            UUID: s.UUID,
-            mode: modes[s.category] || 'off'
-          }));
-
-        if (tabId) tabSegments.set(tabId, { videoID, count: annotated.length, segments: annotated });
-        sendResponse({ segments: annotated, enabled: true, whitelisted: false });
-        break;
+    case 'fetchSegments': {
+      if (!isValidVideoId(message.videoID)) return { ok: false, status: 'unavailable', segments: [], error: 'invalid-video-id' };
+      const enabledData = await browser.storage.local.get('isEnabled');
+      if (enabledData.isEnabled === false) return { ok: true, enabled: false, status: 'disabled', segments: [] };
+      const requestId = typeof message.requestId === 'string' ? message.requestId.slice(0, 128) : '';
+      if (Number.isInteger(tabId)) {
+        tabRequest.set(tabId, requestId);
+        setTabState(tabId, { videoID: message.videoID, status: 'loading', source: null, segments: [], count: 0 });
       }
-
-      case 'skipOccurred': {
-        await recordSkip(message.category, message.duration || 0);
-        sendResponse({ ok: true });
-        break;
+      if (await isWhitelisted(message.videoID, message.channelID)) {
+        const state = { videoID: message.videoID, status: 'whitelisted', source: null, segments: [], count: 0 };
+        if (!Number.isInteger(tabId) || tabRequest.get(tabId) === requestId) setTabState(tabId, state);
+        return { ok: true, enabled: true, whitelisted: true, ...state };
       }
+      const result = await fetchSegments(message.videoID);
+      const modes = await getCategoryModes();
+      const annotated = result.segments
+        .filter(segment => modes[segment.category] !== 'off')
+        .map(segment => ({ ...segment, mode: modes[segment.category] }));
+      const status = result.status === 'cached-offline' ? 'cached-offline'
+        : result.status === 'unavailable' ? 'unavailable'
+          : annotated.length ? 'ready' : 'clean';
+      const state = { videoID: message.videoID, status, source: result.source, segments: annotated, count: annotated.length };
+      if (!Number.isInteger(tabId) || tabRequest.get(tabId) === requestId) setTabState(tabId, state);
+      return { ok: result.ok, enabled: true, whitelisted: false, retryable: result.retryable === true, ...state };
+    }
 
-      case 'getStats': {
-        const { tabId } = message;
-        const storageData = await chrome.storage.local.get([
-          'sponsorsSkippedTotal', 'sponsorsSkippedToday',
-          'timeSavedTotalSeconds', 'isEnabled', 'categoryStats', 'categoryModes'
-        ]);
-        const tabInfo = tabId ? (tabSegments.get(tabId) || null) : null;
-
-        sendResponse({
-          ...storageData,
-          categoryModes: storageData.categoryModes || DEFAULT_MODES,
-          tabSegmentCount: tabInfo ? tabInfo.count : null,
-          tabVideoID: tabInfo ? tabInfo.videoID : null,
-          tabSegments: tabInfo ? tabInfo.segments : []
-        });
-        break;
+    case 'clearTabState':
+      if (Number.isInteger(tabId)) {
+        tabRequest.delete(tabId);
+        setTabState(tabId, { videoID: null, status: 'non-video', source: null, segments: [], count: 0 });
       }
+      return { ok: true };
 
-      case 'setEnabled': {
-        await chrome.storage.local.set({ isEnabled: message.enabled });
-        await broadcastToYouTube({ action: 'enabledChanged', enabled: message.enabled });
-        await updateBadge();
-        sendResponse({ ok: true });
-        break;
-      }
+    case 'reportPageState': {
+      if (!Number.isInteger(tabId)) return { ok: false, error: 'missing-tab' };
+      const allowedStatuses = new Set([
+        'unknown', 'loading', 'disabled', 'whitelisted', 'non-video',
+        'clean', 'cached-offline', 'unavailable', 'ready'
+      ]);
+      const videoID = isValidVideoId(message.videoID) ? message.videoID : null;
+      const status = allowedStatuses.has(message.status) ? message.status : 'unknown';
+      const validated = validateSegments(message.segments);
+      const modes = await getCategoryModes();
+      const segments = (validated || []).map(segment => ({ ...segment, mode: modes[segment.category] }));
+      setTabState(tabId, {
+        videoID,
+        status: videoID ? status : (status === 'disabled' ? 'disabled' : 'non-video'),
+        source: typeof message.source === 'string' ? message.source.slice(0, 32) : null,
+        segments,
+        count: segments.length
+      });
+      return { ok: true };
+    }
 
-      case 'updateCategoryModes': {
-        await chrome.storage.local.set({ categoryModes: message.categoryModes });
-        segmentCache.clear();
-        await broadcastToYouTube({ action: 'modesChanged', categoryModes: message.categoryModes });
-        sendResponse({ ok: true });
-        break;
-      }
+    case 'skipOccurred':
+      return queueStatsMutation(() => recordSkip(message.receiptId, message.category, message.duration));
 
-      case 'resetStats': {
-        const today = new Date().toISOString().slice(0, 10);
-        await chrome.storage.local.set({
+    case 'undoSkip':
+      return queueStatsMutation(() => undoSkip(message.receiptId));
+
+    case 'getStats': {
+      const data = await browser.storage.local.get([
+        'sponsorsSkippedTotal', 'sponsorsSkippedToday', 'timeSavedTotalSeconds',
+        'isEnabled', 'categoryStats', 'categoryModes'
+      ]);
+      const info = Number.isInteger(message.tabId) ? tabState.get(message.tabId) : null;
+      const status = data.isEnabled === false ? 'disabled' : (info?.status || 'unknown');
+      return {
+        ...data,
+        categoryModes: normalizeModes(data.categoryModes, DEFAULT_MODES),
+        tabSegmentCount: info?.count ?? null,
+        tabVideoID: info?.videoID ?? null,
+        tabSegments: info?.segments || [],
+        status,
+        source: info?.source || null,
+        statusPresentation: presentStatus(status, info?.source, info?.count || 0)
+      };
+    }
+
+    case 'setEnabled': {
+      const enabled = message.enabled === true;
+      await browser.storage.local.set({ isEnabled: enabled });
+      await broadcastToYouTube({ action: 'enabledChanged', enabled });
+      await updateBadge();
+      return { ok: true };
+    }
+
+    case 'updateCategoryModes': {
+      const categoryModes = normalizeModes(message.categoryModes, DEFAULT_MODES);
+      await browser.storage.local.set({ categoryModes });
+      memoryCache.clear();
+      await broadcastToYouTube({ action: 'modesChanged', categoryModes });
+      return { ok: true, categoryModes };
+    }
+
+    case 'resetStats':
+      return queueStatsMutation(async () => {
+        await browser.storage.local.set({
           sponsorsSkippedTotal: 0,
           sponsorsSkippedToday: 0,
           timeSavedTotalSeconds: 0,
-          lastResetDate: today,
-          categoryStats: { ...DEFAULT_CATEGORY_STATS }
+          lastResetDate: today(),
+          categoryStats: { ...DEFAULT_CATEGORY_STATS },
+          skipReceipts: {}
         });
         await updateBadge();
-        sendResponse({ ok: true });
-        break;
-      }
+        return { ok: true };
+      });
 
-      // Whitelist operations
-      case 'getWhitelist': {
-        const wl = await getWhitelists();
-        sendResponse(wl);
-        break;
-      }
+    case 'getWhitelist':
+      return getWhitelists();
 
-      case 'addChannelWhitelist': {
-        await addChannelWhitelist(message.channel);
-        sendResponse({ ok: true });
-        break;
-      }
+    case 'addChannelWhitelist':
+      return { ok: await addChannelWhitelist(message.channel) };
 
-      case 'removeChannelWhitelist': {
-        await removeChannelWhitelist(message.channelID);
-        sendResponse({ ok: true });
-        break;
-      }
-
-      case 'addVideoWhitelist': {
-        await addVideoWhitelist(message.videoID);
-        sendResponse({ ok: true });
-        break;
-      }
-
-      case 'removeVideoWhitelist': {
-        await removeVideoWhitelist(message.videoID);
-        sendResponse({ ok: true });
-        break;
-      }
-
-      case 'isWhitelisted': {
-        const result = await isWhitelisted(message.videoID, message.channelID);
-        sendResponse({ whitelisted: result });
-        break;
-      }
-
-      default:
-        sendResponse({ ok: false, error: 'Unknown action' });
+    case 'removeChannelWhitelist': {
+      if (typeof message.channelID !== 'string') return { ok: false, error: 'invalid-channel' };
+      const whitelist = await getWhitelists();
+      await browser.storage.local.set({ whitelistedChannels: whitelist.channels.filter(channel => channel.id !== message.channelID) });
+      return { ok: true };
     }
-  })();
 
-  return true;
-});
+    case 'addVideoWhitelist':
+      return { ok: await addVideoWhitelist(message.videoID) };
 
-// ── Keyboard shortcut handlers ───────────────────────────────────────────────
+    case 'removeVideoWhitelist': {
+      if (!isValidVideoId(message.videoID)) return { ok: false, error: 'invalid-video-id' };
+      const whitelist = await getWhitelists();
+      await browser.storage.local.set({ whitelistedVideos: whitelist.videos.filter(videoID => videoID !== message.videoID) });
+      return { ok: true };
+    }
 
-chrome.commands.onCommand.addListener(async (command) => {
+    case 'isWhitelisted':
+      return { whitelisted: await isWhitelisted(message.videoID, message.channelID) };
+
+    default:
+      return { ok: false, error: 'unknown-action' };
+  }
+}
+
+browser.runtime.onMessage.addListener((message, sender) =>
+  handleMessage(message, sender).catch(error => {
+    console.error('[LoveSpark] Background message failed:', error);
+    return { ok: false, status: 'unavailable', error: 'internal-error' };
+  })
+);
+
+browser.commands.onCommand.addListener(async command => {
   if (command === 'toggle-skip') {
-    const data = await chrome.storage.local.get('isEnabled');
-    const newState = data.isEnabled === false;
-    await chrome.storage.local.set({ isEnabled: newState });
-    await broadcastToYouTube({ action: 'enabledChanged', enabled: newState });
-    await updateBadge();
-  }
-
-  if (command === 'whitelist-channel') {
+    const data = await browser.storage.local.get('isEnabled');
+    await handleMessage({ action: 'setEnabled', enabled: data.isEnabled === false }, { id: browser.runtime.id });
+  } else if (command === 'whitelist-channel') {
     try {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (tab?.id) {
-        chrome.tabs.sendMessage(tab.id, { action: 'getChannelInfo' }, async (info) => {
-          if (info?.id) {
-            await addChannelWhitelist(info);
-            chrome.tabs.sendMessage(tab.id, { action: 'channelWhitelisted' }).catch(() => {});
-          }
-        });
+      const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
+      if (!Number.isInteger(tab?.id)) return;
+      const info = await browser.tabs.sendMessage(tab.id, { action: 'getChannelInfo' });
+      if (isValidChannel(info)) {
+        await addChannelWhitelist(info);
+        await browser.tabs.sendMessage(tab.id, { action: 'channelWhitelisted' }).catch(() => null);
       }
-    } catch (e) {}
+    } catch (error) {
+      console.warn('[LoveSpark] Channel shortcut unavailable:', error.message);
+    }
   }
 });
 
-// ── Lifecycle ────────────────────────────────────────────────────────────────
+async function initStorage() {
+  const data = await browser.storage.local.get(null);
+  const updates = {};
+  if (data.schemaVersion !== SCHEMA_VERSION) updates.schemaVersion = SCHEMA_VERSION;
+  if (data.sponsorsSkippedTotal === undefined) updates.sponsorsSkippedTotal = 0;
+  if (data.sponsorsSkippedToday === undefined) updates.sponsorsSkippedToday = 0;
+  if (data.timeSavedTotalSeconds === undefined) updates.timeSavedTotalSeconds = 0;
+  if (data.lastResetDate === undefined) updates.lastResetDate = today();
+  if (data.isEnabled === undefined) updates.isEnabled = true;
+  if (data.categoryStats === undefined) updates.categoryStats = { ...DEFAULT_CATEGORY_STATS };
+  if (data.whitelistedChannels === undefined) updates.whitelistedChannels = [];
+  if (data.whitelistedVideos === undefined) updates.whitelistedVideos = [];
+  if (data.skipReceipts === undefined) updates.skipReceipts = {};
+  if (data.categories && !data.categoryModes) {
+    updates.categoryModes = normalizeModes(
+      Object.fromEntries(CATEGORIES.map(category => [category, data.categories[category] ? 'auto' : undefined])),
+      DEFAULT_MODES
+    );
+  } else if (!data.categoryModes) {
+    updates.categoryModes = { ...DEFAULT_MODES };
+  }
+  if (data.lastResetDate && data.lastResetDate !== today()) {
+    updates.sponsorsSkippedToday = 0;
+    updates.lastResetDate = today();
+  }
+  if (Object.keys(updates).length) await browser.storage.local.set(updates);
+  await purgePrivateLegacyData();
+  await updateBadge();
+}
 
-chrome.runtime.onInstalled.addListener(initStorage);
-chrome.runtime.onStartup.addListener(initStorage);
-chrome.tabs.onRemoved.addListener((tabId) => tabSegments.delete(tabId));
-initStorage();
+browser.runtime.onInstalled.addListener(() => initStorage().catch(console.error));
+browser.runtime.onStartup.addListener(() => initStorage().catch(console.error));
+browser.tabs.onRemoved.addListener(tabId => {
+  tabState.delete(tabId);
+  tabRequest.delete(tabId);
+});
+initStorage().catch(error => console.error('[LoveSpark] Initialization failed:', error));

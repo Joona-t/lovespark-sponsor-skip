@@ -23,12 +23,12 @@ function applyTheme(t) {
       if (!opt) return;
       const theme = opt.dataset.theme;
       applyTheme(theme);
-      chrome.storage.local.set({ theme });
+      browser.storage.local.set({ theme });
       menu.classList.remove('open');
     });
     document.addEventListener('click', () => menu.classList.remove('open'));
   }
-  chrome.storage.local.get(['theme', 'darkMode'], ({ theme, darkMode }) => {
+  browser.storage.local.get(['theme', 'darkMode']).then(({ theme, darkMode }) => {
     if (!theme && darkMode) theme = 'dark';
     applyTheme(theme || 'retro');
   });
@@ -63,6 +63,7 @@ const emptyState   = document.getElementById('empty-state');
 const toggle       = document.getElementById('toggle-enabled');
 const settingsBtn  = document.getElementById('settings-btn');
 const footerMsg    = document.getElementById('footer-message');
+const lookupStatus = document.getElementById('lookup-status');
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -126,7 +127,9 @@ function renderSegments(segments) {
   segmentList.querySelectorAll('.segment-item').forEach(el => el.remove());
 
   if (!segments || segments.length === 0) {
-    emptyState.style.display = '';
+    // lookup-status owns all empty/error copy so the popup never shows a
+    // contradictory generic "open a video" message beneath a real status.
+    emptyState.style.display = 'none';
     return;
   }
 
@@ -159,6 +162,13 @@ function renderSegments(segments) {
   }
 }
 
+function renderLookupStatus(data) {
+  if (!lookupStatus) return;
+  const presentation = data.statusPresentation || { state: data.status || 'non-video', message: 'Open a YouTube video to scan segments' };
+  lookupStatus.dataset.state = presentation.state;
+  lookupStatus.textContent = presentation.message;
+}
+
 // ── Load mode selectors ──────────────────────────────────────────────────────
 
 function loadModes(modes) {
@@ -173,7 +183,7 @@ function saveModes() {
   document.querySelectorAll('.mode-select').forEach(select => {
     modes[select.dataset.cat] = select.value;
   });
-  chrome.runtime.sendMessage({ action: 'updateCategoryModes', categoryModes: modes }).catch(() => {});
+  browser.runtime.sendMessage({ action: 'updateCategoryModes', categoryModes: modes }).catch(() => {});
 }
 
 document.querySelectorAll('.mode-select').forEach(select => {
@@ -182,25 +192,42 @@ document.querySelectorAll('.mode-select').forEach(select => {
 
 // ── Load stats ───────────────────────────────────────────────────────────────
 
-function loadStats() {
-  chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
-    const tabId = tab ? tab.id : null;
-
-    chrome.runtime.sendMessage({ action: 'getStats', tabId }, (data) => {
-      if (chrome.runtime.lastError || !data) return;
+async function loadStats() {
+  try {
+    const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
+    const tabId = Number.isInteger(tab?.id) ? tab.id : null;
+    let pageState = null;
+    if (tabId !== null) {
+      try { pageState = await browser.tabs.sendMessage(tabId, { action: 'getPageState' }); } catch (err) { console.warn('[lovespark-sponsor-skip] unknown:', err); }
+    }
+    const data = await browser.runtime.sendMessage({ action: 'getStats', tabId });
+    if (!data) return;
+    const urlMatch = (tab?.url || '').match(/[?&]v=([A-Za-z0-9_-]{11})|\/(?:shorts|embed)\/([A-Za-z0-9_-]{11})/);
+    const urlVideoID = urlMatch ? (urlMatch[1] || urlMatch[2]) : null;
+    if (data.isEnabled !== false && pageState?.ok && pageState.videoID === urlVideoID) {
+      data.tabSegments = pageState.segments || [];
+      data.status = pageState.status || 'unknown';
+      data.source = pageState.source || null;
+      data.statusPresentation = LoveSparkCore.presentStatus(data.status, data.source, data.tabSegments.length);
+    } else if (data.isEnabled !== false && !urlVideoID) {
+      data.status = 'non-video';
+      data.statusPresentation = LoveSparkCore.presentStatus('non-video', null, 0);
+    }
 
       animateTo(elToday, data.sponsorsSkippedToday || 0);
       animateTo(elTotal, data.sponsorsSkippedTotal || 0);
       elTime.textContent = formatTimeSaved(data.timeSavedTotalSeconds || 0);
 
       renderSegments(data.tabSegments || []);
+      renderLookupStatus(data);
       loadModes(data.categoryModes || {});
 
       const enabled = data.isEnabled !== false;
       toggle.checked = enabled;
       document.body.classList.toggle('disabled', !enabled);
-    });
-  });
+  } catch (error) {
+    renderLookupStatus({ status: 'unknown', statusPresentation: LoveSparkCore.presentStatus('unknown', null, 0) });
+  }
 }
 
 // ── Toggle ───────────────────────────────────────────────────────────────────
@@ -208,13 +235,13 @@ function loadStats() {
 toggle.addEventListener('change', () => {
   const enabled = toggle.checked;
   document.body.classList.toggle('disabled', !enabled);
-  chrome.runtime.sendMessage({ action: 'setEnabled', enabled }).catch(() => {});
+  browser.runtime.sendMessage({ action: 'setEnabled', enabled }).catch(() => {});
 });
 
 // ── Settings ─────────────────────────────────────────────────────────────────
 
 settingsBtn.addEventListener('click', () => {
-  chrome.tabs.create({ url: chrome.runtime.getURL('settings.html') });
+  browser.tabs.create({ url: browser.runtime.getURL('settings.html') });
   window.close();
 });
 

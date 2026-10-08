@@ -2,6 +2,7 @@
   "manifest_version": 3,
   "name": "__MSG_extName__",
   "version": "2.0.36",
+  "minimum_chrome_version": "121",
   "description": "__MSG_extDescription__",
   "permissions": [
     "storage"
@@ -11,7 +12,12 @@
     "https://sponsor.ajay.app/*"
   ],
   "background": {
-    "service_worker": "background.js"
+    "service_worker": "background-worker.js",
+    "scripts": [
+      "lib/browser-polyfill.min.js",
+      "core.js",
+      "background.js"
+    ]
   },
   "content_scripts": [
     {
@@ -29,6 +35,7 @@
       ],
       "js": [
         "lib/browser-polyfill.min.js",
+        "core.js",
         "content.js"
       ],
       "run_at": "document_idle"
@@ -60,13 +67,13 @@
   "commands": {
     "toggle-skip": {
       "suggested_key": {
-        "default": "Shift+S"
+        "default": "Alt+Shift+S"
       },
       "description": "Toggle sponsor skip on/off"
     },
     "whitelist-channel": {
       "suggested_key": {
-        "default": "Shift+W"
+        "default": "Alt+Shift+W"
       },
       "description": "Whitelist current channel"
     }
@@ -77,10 +84,11 @@
   "browser_specific_settings": {
     "gecko": {
       "id": "sponsor-skip@lovespark.suite",
-      "strict_min_version": "109.0",
+      "strict_min_version": "140.0",
       "data_collection_permissions": {
-        "is_exempt": true,
-        "justification": "This extension does not collect, transmit, or store any user data. Only SHA-256 hash prefixes are sent to SponsorBlock for k-anonymity segment lookups."
+        "required": [
+          "browsingActivity"
+        ]
       }
     }
   },

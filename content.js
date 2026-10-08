@@ -1,6 +1,13 @@
 // YouTube Sponsor Skip v2 — content.js
 'use strict';
 
+const {
+  isValidVideoId, parseYouTubeVideoId, isInRange,
+  createLifecycleController, createVideoBinding
+} = globalThis.LoveSparkCore;
+const lifecycle = createLifecycleController();
+const notifyLifecycle = createLifecycleController();
+
 // ── YouTube selectors (centralized for easy maintenance) ─────────────────────
 
 const YT = {
@@ -37,15 +44,16 @@ let isInitialized    = false;
 let navDebounceTimer = null;
 let toastHost        = null;
 let toastShadow      = null;
+let retryAttemptedFor = null;
+let activeLifecycleToken = null;
+let videoWaitTimer = null;
+let pageStatus = 'unknown';
+let pageSource = null;
 
 // ── Utility ──────────────────────────────────────────────────────────────────
 
 function getVideoID() {
-  const url = location.href;
-  const match = url.match(/[?&]v=([a-zA-Z0-9_-]{11})/)
-    || url.match(/\/shorts\/([a-zA-Z0-9_-]{11})/)
-    || url.match(/\/embed\/([a-zA-Z0-9_-]{11})/);
-  return match ? match[1] : null;
+  return parseYouTubeVideoId(location.href);
 }
 
 function getVideoElement() {
@@ -60,8 +68,8 @@ function getChannelInfo() {
   const el = document.querySelector(YT.CHANNEL_NAME);
   if (!el) return null;
   const href = el.href || '';
-  const match = href.match(/\/(channel|c|@)\/([^/?]+)/);
-  return { id: match ? match[2] : href, name: el.textContent.trim() };
+  const match = href.match(/\/(?:channel|c)\/([^/?]+)/) || href.match(/\/@([^/?]+)/);
+  return { id: match ? match[1] : href, name: el.textContent.trim() };
 }
 
 function formatTime(seconds) {
@@ -178,6 +186,7 @@ function ensureToastHost() {
 }
 
 function clearToasts() {
+  notifyLifecycle.cancel();
   if (toastShadow) {
     toastShadow.querySelectorAll('.ls-toast').forEach(t => t.remove());
   }
@@ -197,10 +206,24 @@ function showAutoSkipToast(segment) {
   const saved = Math.round(end - start);
   const label = CATEGORY_LABELS[segment.category] || segment.category;
   const channel = getChannelInfo();
+  const skippedVideoID = currentVideoID;
+  const skippedVideoEl = videoEl;
 
   const undoBtn = el('button', { class: 'ls-toast-btn', text: 'Undo' });
-  undoBtn.addEventListener('click', () => {
-    if (videoEl) videoEl.currentTime = start;
+  undoBtn.addEventListener('click', async () => {
+    if (segment._undoRequested) return;
+    segment._undoRequested = true;
+    segment._userAllowed = true;
+    if (currentVideoID === skippedVideoID && videoEl === skippedVideoEl &&
+        Number.isFinite(start) && start >= 0 && start <= skippedVideoEl.duration) {
+      skippedVideoEl.currentTime = start;
+    }
+    try {
+      const receiptId = segment._receiptId || (await segment._skipPromise)?.receiptId;
+      if (receiptId) await browser.runtime.sendMessage({ action: 'undoSkip', receiptId });
+    } catch (error) {
+      console.warn('[LoveSpark] Could not reverse skip statistics:', error.message);
+    }
     dismissToast(toast);
   });
 
@@ -208,11 +231,21 @@ function showAutoSkipToast(segment) {
 
   if (channel) {
     const wlBtn = el('button', { class: 'ls-toast-btn', text: `Allow from @${channel.name}` });
-    wlBtn.addEventListener('click', () => {
-      chrome.runtime.sendMessage({ action: 'addChannelWhitelist', channel }).catch(() => {});
-      activeSegments = [];
-      removeProgressMarkers();
-      dismissToast(toast);
+    wlBtn.addEventListener('click', async () => {
+      try {
+        const result = await browser.runtime.sendMessage({ action: 'addChannelWhitelist', channel });
+        if (!result?.ok) return;
+        lifecycle.cancel();
+        notifyLifecycle.cancel();
+        activeSegments = [];
+        pageStatus = 'whitelisted';
+        pageSource = null;
+        removeProgressMarkers();
+        await reportPageState();
+        dismissToast(toast);
+      } catch (error) {
+        console.warn('[LoveSpark] Could not allow this channel:', error.message);
+      }
     });
     actions.appendChild(wlBtn);
   }
@@ -242,25 +275,34 @@ function showNotifyToast(segment) {
     el('div', { class: 'ls-toast-actions' }, [countdownEl, watchBtn])
   ]);
 
-  let remaining = 3;
-  let cancelled = false;
-
-  const interval = setInterval(() => {
-    remaining--;
-    if (remaining <= 0) {
-      clearInterval(interval);
-      if (!cancelled) {
-        executeSkip(segment);
+  const notifyVideoID = currentVideoID;
+  const notifyVideoEl = videoEl;
+  const token = notifyLifecycle.begin();
+  const contextIsCurrent = () => notifyLifecycle.valid(token)
+    && currentVideoID === notifyVideoID && videoEl === notifyVideoEl
+    && isEnabled && !notifyVideoEl.paused
+    && isInRange(notifyVideoEl.currentTime, segment, SKIP_END_BUFFER);
+  const tick = remaining => {
+    notifyLifecycle.countdown(token, 1000, () => {
+      if (!contextIsCurrent()) {
+        segment._notifying = false;
         dismissToast(toast);
+        return;
       }
-      return;
-    }
-    countdownEl.textContent = `Skipping in ${remaining}...`;
-  }, 1000);
+      if (remaining <= 1) {
+        executeSkip(segment, notifyVideoID, notifyVideoEl);
+        dismissToast(toast);
+        return;
+      }
+      countdownEl.textContent = `Skipping in ${remaining - 1}...`;
+      tick(remaining - 1);
+    });
+  };
+  tick(3);
 
   watchBtn.addEventListener('click', () => {
-    cancelled = true;
-    clearInterval(interval);
+    notifyLifecycle.cancel();
+    segment._notifying = false;
     segment._userAllowed = true;
     dismissToast(toast);
   });
@@ -309,22 +351,29 @@ function injectProgressMarkers() {
 
 // ── Skip execution ───────────────────────────────────────────────────────────
 
-function executeSkip(segment) {
-  if (!videoEl) return;
+function executeSkip(segment, expectedVideoID = currentVideoID, expectedVideoEl = videoEl) {
+  if (!videoEl || videoEl !== expectedVideoEl || currentVideoID !== expectedVideoID || !isEnabled
+      || !isInRange(videoEl.currentTime, segment, SKIP_END_BUFFER)) return false;
 
-  const [start, end] = segment.segment;
-  const duration = Math.round(end - start);
+  const [, end] = segment.segment;
+  const before = videoEl.currentTime;
+  const duration = Math.max(0, Math.round(end - before));
 
-  videoEl.currentTime = end;
+  try { videoEl.currentTime = end; } catch (_) { return false; }
+  if (Math.abs(videoEl.currentTime - end) > 0.5) return false;
   segment._skippedAt = Date.now();
+  segment._userAllowed = true;
+  segment._receiptId = `skip_${crypto.randomUUID().replaceAll('-', '_')}`;
 
-  chrome.runtime.sendMessage({
+  segment._skipPromise = browser.runtime.sendMessage({
     action: 'skipOccurred',
     category: segment.category,
-    duration
-  }).catch(() => {});
+    duration,
+    receiptId: segment._receiptId
+  }).then(result => result?.ok ? result : null).catch(() => null);
 
   showAutoSkipToast(segment);
+  return true;
 }
 
 // ── Core timeupdate handler ──────────────────────────────────────────────────
@@ -352,66 +401,87 @@ function onTimeUpdate() {
   }
 }
 
+const videoBinding = createVideoBinding({
+  onTimeUpdate,
+  onMetadata: () => injectProgressMarkers()
+});
+
 // ── Video lifecycle ──────────────────────────────────────────────────────────
 
 function detachVideo() {
-  if (videoEl) {
-    videoEl.removeEventListener('timeupdate', onTimeUpdate);
-    videoEl = null;
+  if (videoWaitTimer !== null) {
+    clearTimeout(videoWaitTimer);
+    videoWaitTimer = null;
   }
+  videoBinding.detach();
+  videoEl = null;
 }
 
 function attachVideo(video) {
+  if (video === videoEl) return;
   detachVideo();
   videoEl = video;
-  videoEl.addEventListener('timeupdate', onTimeUpdate);
-
-  if (videoEl.duration) {
-    injectProgressMarkers();
-  } else {
-    videoEl.addEventListener('loadedmetadata', injectProgressMarkers, { once: true });
-  }
+  videoBinding.attach(video);
 }
 
-function waitForVideo(callback, attempts) {
+function waitForVideo(callback, attempts, expectedVideoID, token) {
   attempts = attempts || 0;
+  if (!lifecycle.valid(token) || currentVideoID !== expectedVideoID) return;
   const video = getVideoElement();
   if (video) { callback(video); return; }
   if (attempts >= VIDEO_POLL_MAX) return;
-  setTimeout(() => waitForVideo(callback, attempts + 1), VIDEO_POLL_INTERVAL);
+  videoWaitTimer = setTimeout(() => waitForVideo(callback, attempts + 1, expectedVideoID, token), VIDEO_POLL_INTERVAL);
 }
 
 // ── Video change handler (debounced) ─────────────────────────────────────────
 
 function onVideoChange() {
   if (navDebounceTimer) clearTimeout(navDebounceTimer);
-  navDebounceTimer = setTimeout(_handleVideoChange, DEBOUNCE_NAV_MS);
+  navDebounceTimer = setTimeout(() => _handleVideoChange(), DEBOUNCE_NAV_MS);
 }
 
-async function _handleVideoChange() {
-  const videoID = getVideoID();
-  if (!videoID || videoID === currentVideoID) return;
+function scheduleLookupRetry(videoID) {
+  if (retryAttemptedFor === videoID) return;
+  retryAttemptedFor = videoID;
+  const token = activeLifecycleToken;
+  lifecycle.retryOnce(token, 3000, () => {
+    if (isEnabled && currentVideoID === videoID) lookupForVideo(videoID, token, true);
+  });
+}
 
-  const requestedID = videoID;
-  currentVideoID = videoID;
+async function reportPageState() {
+  try {
+    await browser.runtime.sendMessage({
+      action: 'reportPageState', videoID: currentVideoID, status: pageStatus,
+      source: pageSource, segments: activeSegments
+    });
+  } catch (err) { console.warn('[lovespark-sponsor-skip] unknown:', err); }
+}
 
-  detachVideo();
-  activeSegments = [];
-  removeProgressMarkers();
-  clearToasts();
-
-  if (!isEnabled) return;
-
+async function lookupForVideo(videoID, token, isRetry) {
   try {
     const channel = getChannelInfo();
-    const response = await chrome.runtime.sendMessage({
+    const response = await browser.runtime.sendMessage({
       action: 'fetchSegments',
       videoID,
-      channelID: channel?.id || null
+      channelID: channel?.id || null,
+      requestId: `${videoID}:${token}:${isRetry ? 'retry' : 'initial'}`
     });
 
-    if (currentVideoID !== requestedID) return;
-    if (response.whitelisted) return;
+    if (!lifecycle.valid(token) || currentVideoID !== videoID) return;
+    pageStatus = response.status || 'unavailable';
+    pageSource = response.source || null;
+    if (response.whitelisted) {
+      activeSegments = [];
+      await reportPageState();
+      return;
+    }
+    if (response.status === 'unavailable') {
+      activeSegments = [];
+      await reportPageState();
+      if (response.retryable && !isRetry) scheduleLookupRetry(videoID);
+      return;
+    }
 
     activeSegments = (response.segments || []).map(s => ({
       ...s,
@@ -420,21 +490,72 @@ async function _handleVideoChange() {
       _userAllowed: false
     }));
 
-    waitForVideo(attachVideo);
-  } catch (e) {}
+    await reportPageState();
+    waitForVideo(attachVideo, 0, videoID, token);
+  } catch (error) {
+    console.warn('[LoveSpark] Segment lookup failed:', error.message);
+    if (!lifecycle.valid(token) || currentVideoID !== videoID) return;
+    pageStatus = 'unavailable';
+    pageSource = null;
+    activeSegments = [];
+    await reportPageState();
+    if (!isRetry) scheduleLookupRetry(videoID);
+  }
+}
+
+async function _handleVideoChange({ force = false } = {}) {
+  const videoID = getVideoID();
+  if (!isValidVideoId(videoID)) {
+    lifecycle.cancel();
+    activeLifecycleToken = null;
+    retryAttemptedFor = null;
+    currentVideoID = null;
+    pageStatus = isEnabled ? 'non-video' : 'disabled';
+    pageSource = null;
+    detachVideo();
+    activeSegments = [];
+    removeProgressMarkers();
+    clearToasts();
+    await reportPageState();
+    return;
+  }
+  if (!force && videoID === currentVideoID) {
+    const replacement = getVideoElement();
+    if (replacement && replacement !== videoEl) attachVideo(replacement);
+    return;
+  }
+
+  activeLifecycleToken = lifecycle.begin();
+  retryAttemptedFor = null;
+  currentVideoID = videoID;
+  pageStatus = isEnabled ? 'loading' : 'disabled';
+  pageSource = null;
+  detachVideo();
+  activeSegments = [];
+  removeProgressMarkers();
+  clearToasts();
+  await reportPageState();
+  if (isEnabled) await lookupForVideo(videoID, activeLifecycleToken, false);
 }
 
 // ── Message listener ─────────────────────────────────────────────────────────
 
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+browser.runtime.onMessage.addListener((message, sender, sendResponse) => {
   switch (message.action) {
     case 'enabledChanged':
       isEnabled = message.enabled;
+      pageStatus = isEnabled ? 'unknown' : 'disabled';
+      pageSource = null;
+      lifecycle.cancel();
+      activeLifecycleToken = null;
+      retryAttemptedFor = null;
+      clearToasts();
       if (!isEnabled) {
         detachVideo();
         activeSegments = [];
         removeProgressMarkers();
         clearToasts();
+        reportPageState();
       } else {
         currentVideoID = null;
         onVideoChange();
@@ -442,18 +563,32 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       break;
 
     case 'modesChanged':
+      lifecycle.cancel();
+      clearToasts();
       currentVideoID = null;
       onVideoChange();
       break;
 
+    case 'getPageState':
+      return Promise.resolve({
+        ok: true,
+        videoID: currentVideoID,
+        status: pageStatus,
+        source: pageSource,
+        segments: activeSegments.map(({ segment, category, UUID, mode }) => ({ segment, category, UUID, mode }))
+      });
+
     case 'getChannelInfo':
-      sendResponse(getChannelInfo());
-      return true;
+      return Promise.resolve(getChannelInfo());
 
     case 'channelWhitelisted':
-      activeSegments = [];
-      removeProgressMarkers();
+      lifecycle.cancel();
       clearToasts();
+      activeSegments = [];
+      pageStatus = 'whitelisted';
+      pageSource = null;
+      removeProgressMarkers();
+      reportPageState();
       break;
   }
 });
@@ -462,6 +597,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 document.addEventListener('yt-navigate-finish', onVideoChange);
 window.addEventListener('popstate', onVideoChange);
+document.addEventListener('loadedmetadata', event => {
+  if (event.target?.matches?.(YT.VIDEO) && event.target !== videoEl && isValidVideoId(currentVideoID)) {
+    attachVideo(event.target);
+  }
+}, true);
 
 const titleEl = document.querySelector('title');
 if (titleEl) {
@@ -472,7 +612,7 @@ if (titleEl) {
 
 (async function init() {
   try {
-    const data = await chrome.storage.local.get('isEnabled');
+    const data = await browser.storage.local.get('isEnabled');
     isEnabled = data.isEnabled !== false;
   } catch (e) {}
 

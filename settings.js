@@ -2,7 +2,7 @@
 'use strict';
 
 // Dark mode
-chrome.storage.local.get(['darkMode'], ({ darkMode }) => {
+browser.storage.local.get(['darkMode']).then(({ darkMode }) => {
   document.documentElement.setAttribute('data-theme', darkMode ? 'dark' : 'light');
   const btn = document.getElementById('btnDarkMode');
   if (btn) btn.textContent = darkMode ? '☀️' : '🌙';
@@ -10,7 +10,7 @@ chrome.storage.local.get(['darkMode'], ({ darkMode }) => {
 function toggleTheme() {
   const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
   document.documentElement.setAttribute('data-theme', isDark ? 'light' : 'dark');
-  chrome.storage.local.set({ darkMode: !isDark });
+  browser.storage.local.set({ darkMode: !isDark });
   const btn = document.getElementById('btnDarkMode');
   if (btn) btn.textContent = isDark ? '🌙' : '☀️';
 }
@@ -54,7 +54,7 @@ function saveModes() {
   document.querySelectorAll('.mode-select').forEach(select => {
     modes[select.dataset.cat] = select.value;
   });
-  chrome.runtime.sendMessage({ action: 'updateCategoryModes', categoryModes: modes }).catch(() => {});
+  browser.runtime.sendMessage({ action: 'updateCategoryModes', categoryModes: modes }).catch(() => {});
 }
 
 document.querySelectorAll('.mode-select').forEach(select => {
@@ -86,9 +86,7 @@ function renderChannels(channels) {
     btn.textContent = '✕';
     btn.setAttribute('aria-label', `Remove ${ch.name || ch.id}`);
     btn.addEventListener('click', () => {
-      chrome.runtime.sendMessage({ action: 'removeChannelWhitelist', channelID: ch.id }, () => {
-        loadWhitelists();
-      });
+      browser.runtime.sendMessage({ action: 'removeChannelWhitelist', channelID: ch.id }).then(loadWhitelists).catch(() => {});
     });
 
     item.appendChild(name);
@@ -120,9 +118,7 @@ function renderVideos(videos) {
     btn.textContent = '✕';
     btn.setAttribute('aria-label', `Remove ${vid}`);
     btn.addEventListener('click', () => {
-      chrome.runtime.sendMessage({ action: 'removeVideoWhitelist', videoID: vid }, () => {
-        loadWhitelists();
-      });
+      browser.runtime.sendMessage({ action: 'removeVideoWhitelist', videoID: vid }).then(loadWhitelists).catch(() => {});
     });
 
     item.appendChild(name);
@@ -131,19 +127,21 @@ function renderVideos(videos) {
   }
 }
 
-function loadWhitelists() {
-  chrome.runtime.sendMessage({ action: 'getWhitelist' }, (data) => {
-    if (chrome.runtime.lastError || !data) return;
+async function loadWhitelists() {
+  try {
+    const data = await browser.runtime.sendMessage({ action: 'getWhitelist' });
+    if (!data) return;
     renderChannels(data.channels || []);
     renderVideos(data.videos || []);
-  });
+  } catch (err) { console.warn('[lovespark-sponsor-skip] unknown:', err); }
 }
 
 // ── Load stats ──────────────────────────────────────────────────────────────
 
-function loadStats() {
-  chrome.runtime.sendMessage({ action: 'getStats', tabId: null }, (data) => {
-    if (chrome.runtime.lastError || !data) return;
+async function loadStats() {
+  try {
+    const data = await browser.runtime.sendMessage({ action: 'getStats', tabId: null });
+    if (!data) return;
 
     // Master toggle
     masterToggle.checked = data.isEnabled !== false;
@@ -162,13 +160,13 @@ function loadStats() {
       const el = document.getElementById(`cat-${cat}`);
       if (el) el.textContent = catStats[cat] || 0;
     }
-  });
+  } catch (err) { console.warn('[lovespark-sponsor-skip] unknown:', err); }
 }
 
 // ── Master toggle ───────────────────────────────────────────────────────────
 
 masterToggle.addEventListener('change', () => {
-  chrome.runtime.sendMessage({ action: 'setEnabled', enabled: masterToggle.checked }).catch(() => {});
+  browser.runtime.sendMessage({ action: 'setEnabled', enabled: masterToggle.checked }).catch(() => {});
 });
 
 // ── Reset stats ─────────────────────────────────────────────────────────────
@@ -177,7 +175,7 @@ resetBtn.addEventListener('click', async () => {
   const confirmed = confirm('Reset all stats? This cannot be undone.');
   if (!confirmed) return;
 
-  await chrome.runtime.sendMessage({ action: 'resetStats' });
+  await browser.runtime.sendMessage({ action: 'resetStats' });
 
   document.getElementById('stat-today').textContent = '0';
   document.getElementById('stat-total').textContent = '0';

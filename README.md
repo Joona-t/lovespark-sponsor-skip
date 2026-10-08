@@ -11,9 +11,9 @@ Part of the [LoveSpark Suite](https://github.com/Joona-t) — retro pink product
 - **Progress bar visualization** — Colored segment markers on the YouTube seek bar
 - **Toast notifications** — Beautiful skip confirmations with Undo and channel whitelisting
 - **Channel & video whitelisting** — Support creators you love
-- **Privacy-first** — Uses SHA-256 hash prefix lookups (k-anonymity), no tracking, local storage only
-- **Offline resilience** — Persistent segment cache with 24-hour TTL
-- **Keyboard shortcuts** — Shift+S to toggle, Shift+W to whitelist channel
+- **Privacy-first** — Sends only a four-character SHA-256 prefix for SponsorBlock lookups, with no analytics or tracking
+- **Offline resilience** — Persistent hashed-key segment cache with a 24-hour fresh TTL and a maximum 7-day stale fallback
+- **Keyboard shortcuts** — Alt+Shift+S to toggle, Alt+Shift+W to whitelist channel
 
 ## Install
 
@@ -32,7 +32,7 @@ Coming soon.
 
 Segment data is fetched from the SponsorBlock public API using a privacy-preserving hash prefix method. Results are filtered client-side so the full video ID is never sent to the server.
 
-Segments are cached both in memory (1 hour) and persistently (24 hours) for offline resilience.
+Segments are cached in memory for 1 hour and persistently as fresh data for 24 hours. If SponsorBlock is unavailable, a matching cache entry may be used for at most 7 days and the popup labels it as offline cache data. Cache keys are deterministic full hashes of the video ID plus enabled-category set; this avoids plain-text video IDs but is not anonymity against a known candidate list.
 
 ## Attribution
 
@@ -40,8 +40,8 @@ Segment data provided by [SponsorBlock](https://sponsor.ajay.app/) — a crowdso
 
 ## Privacy
 
-- No data collection, no analytics, no tracking
-- All settings stored locally via `chrome.storage.local`
+- No analytics or tracking
+- Preferences, statistics, skip receipts, whitelists, and segment cache records are stored locally via `browser.storage.local`
 - API requests use k-anonymity (hash prefix, not full video ID)
 - See [PRIVACY.md](PRIVACY.md) for details
 

@@ -166,6 +166,14 @@ body {
   min-height: 36px;
 }
 
+.lookup-status {
+  font-size: 11px;
+  color: var(--ls-text-muted);
+  padding: 0 0 7px;
+}
+.lookup-status[data-state="unavailable"] { color: #9a3d5d; }
+.lookup-status[data-state="ready"] { color: var(--ls-pink-accent); }
+
 .segment-item {
   display: flex;
   align-items: center;

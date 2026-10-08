@@ -1,10 +1,10 @@
 # Privacy Policy — YouTube Sponsor Skip
 
-**Last updated:** February 23, 2026
+**Last updated:** August 20, 2026
 
 ## Summary
 
-YouTube Sponsor Skip does **not** collect, store, or transmit any personal data. All user preferences and statistics are stored locally on your device.
+YouTube Sponsor Skip has no analytics, tracking, accounts, or developer-operated datastore. It stores the settings and operational records listed below locally on your device and transmits a four-character hash prefix derived from the current YouTube video ID to SponsorBlock.
 
 ## Data Storage
 
@@ -12,8 +12,13 @@ All data is stored locally using your browser's `storage.local` API:
 
 - **Extension preferences** (enabled/disabled state, category toggles)
 - **Skip statistics** (counters and time saved)
+- **Skip receipts** (short random identifiers, category, duration, and date used to make Undo exact; receipts do not contain a video or channel ID and are capped locally)
+- **Whitelists** (channel and video identifiers you explicitly add)
+- **Segment cache metadata** (validated category/time ranges and fetch time; fresh for 24 hours and usable as an offline fallback for at most 7 days)
 
-This data never leaves your device and is not accessible to LoveSpark or any third party.
+Cache keys are full SHA-256 hashes of the video ID plus active-category signature. This removes immediately readable video IDs from cache keys, but the keys are deterministic and are not anonymous against someone testing a known candidate video ID. Legacy cache keys containing plain video IDs are removed on startup.
+
+These stored records are not sent to LoveSpark or any third party. The separate SponsorBlock lookup described below transmits only a short hash prefix.
 
 ## Network Requests
 
@@ -21,7 +26,9 @@ The extension makes requests to the [SponsorBlock API](https://sponsor.ajay.app)
 
 - Video IDs are **hashed with SHA-256** before being sent
 - Only the first 4 characters of the hash are transmitted (a k-anonymity technique)
-- No account information, browsing history, or personal data is included in any request
+- The currently enabled SponsorBlock category names are sent as the request's category filter
+- The prefix is derived from browsing activity, so Firefox declares the required `browsingActivity` data category
+- No account information, analytics identifier, cookies, or full video ID is included
 
 No other network requests are made by this extension.
 
@@ -29,7 +36,7 @@ No other network requests are made by this extension.
 
 | Permission | Purpose |
 |---|---|
-| `storage` | Save your preferences and skip statistics locally |
+| `storage` | Save preferences, skip statistics/receipts, whitelists, and segment cache locally |
 | `host_permissions` (youtube.com) | Detect sponsor segments during video playback |
 | `host_permissions` (sponsor.ajay.app) | Fetch crowdsourced segment data |
 
@@ -42,7 +49,7 @@ No other network requests are made by this extension.
 YouTube Sponsor Skip does **not**:
 
 - Collect personal information
-- Track browsing activity
+- Send browsing history or locally stored whitelist/cache/receipt records to LoveSpark
 - Use analytics or telemetry
 - Share data with third parties
 - Use cookies or fingerprinting
