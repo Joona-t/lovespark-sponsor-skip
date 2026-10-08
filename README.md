@@ -1,3 +1,5 @@
+> **📦 Moved.** This extension now lives in the LoveSpark monorepo: **[Joona-t/lovespark-extensions/productivity/lovespark-sponsor-skip](https://github.com/Joona-t/lovespark-extensions/tree/main/productivity/lovespark-sponsor-skip)** (full history kept). This repo is archived and read-only.
+
 # LoveSpark Sponsor Skip
 
 Auto-skip YouTube sponsor segments with style. Uses the [SponsorBlock](https://sponsor.ajay.app/) community API for segment data.
