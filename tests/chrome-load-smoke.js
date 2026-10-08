@@ -36,7 +36,7 @@ async function browserDebuggerUrl(port) {
 async function waitForBrowser(port, process) {
   const deadline = Date.now() + 10000;
   while (Date.now() < deadline && process.exitCode === null) {
-    try { return await browserDebuggerUrl(port); } catch (err) { console.warn('[tests] waitForBrowser:', err); }
+    try { return await browserDebuggerUrl(port); } catch (_) {}
     await new Promise(resolve => setTimeout(resolve, 100));
   }
   throw new Error('Chrome DevTools endpoint did not start');
@@ -51,7 +51,7 @@ async function waitForWorker(port, process) {
       const worker = lastTargets.find(target =>
         target.type === 'service_worker' && target.url.endsWith('/background-worker.js'));
       if (worker) return worker;
-    } catch (err) { console.warn('[tests] unknown:', err); }
+    } catch (_) {}
     await new Promise(resolve => setTimeout(resolve, 150));
   }
   const summary = lastTargets.map(target => `${target.type}:${target.url}`).join(', ') || 'none';

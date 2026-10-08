@@ -198,7 +198,7 @@ async function loadStats() {
     const tabId = Number.isInteger(tab?.id) ? tab.id : null;
     let pageState = null;
     if (tabId !== null) {
-      try { pageState = await browser.tabs.sendMessage(tabId, { action: 'getPageState' }); } catch (err) { console.warn('[lovespark-sponsor-skip] unknown:', err); }
+      try { pageState = await browser.tabs.sendMessage(tabId, { action: 'getPageState' }); } catch (_) {}
     }
     const data = await browser.runtime.sendMessage({ action: 'getStats', tabId });
     if (!data) return;

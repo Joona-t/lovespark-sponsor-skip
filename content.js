@@ -455,7 +455,7 @@ async function reportPageState() {
       action: 'reportPageState', videoID: currentVideoID, status: pageStatus,
       source: pageSource, segments: activeSegments
     });
-  } catch (err) { console.warn('[lovespark-sponsor-skip] unknown:', err); }
+  } catch (_) {}
 }
 
 async function lookupForVideo(videoID, token, isRetry) {

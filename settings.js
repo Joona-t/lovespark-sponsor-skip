@@ -133,7 +133,7 @@ async function loadWhitelists() {
     if (!data) return;
     renderChannels(data.channels || []);
     renderVideos(data.videos || []);
-  } catch (err) { console.warn('[lovespark-sponsor-skip] unknown:', err); }
+  } catch (_) {}
 }
 
 // ── Load stats ──────────────────────────────────────────────────────────────
@@ -160,7 +160,7 @@ async function loadStats() {
       const el = document.getElementById(`cat-${cat}`);
       if (el) el.textContent = catStats[cat] || 0;
     }
-  } catch (err) { console.warn('[lovespark-sponsor-skip] unknown:', err); }
+  } catch (_) {}
 }
 
 // ── Master toggle ───────────────────────────────────────────────────────────
